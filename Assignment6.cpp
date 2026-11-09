@@ -1,18 +1,22 @@
-// File Name: Assignment5.cpp
+// File Name: Assignment6.cpp
 // Author: Baylie Stith
 //
 // Description: Solves a sudoku puzzle using recursion (depth-first search
-//              with backtracking). Finds all solutions and writes them to corresponding
-//              output files (solution1.txt through solution5.txt).
-// Contributors: ChatGPT
+//              with backtracking). Finds all solutions and writes them to a single
+//              output file (solutions.txt).
+// Contributors: ChatGPT, Claude
 // Orignal AI Used: Claude
 //
 // Input: Sudoku puzzle text files (digits 1-9, '_' or '0' for a blank)
-// Output: Written to solution files: either "No solution found." or each solution grid
-//         followed by "Solutions found: n".
+// Output: Written to solutions.txt: for each puzzle, "Puzzle: <file name>" followed by either
+//         "No solution found." or each solution grid followed by "Solutions found: n".
 // Created: 10/13/2026
 // Revised: 10/14/2026 (Baylie Stith & ChatGPT)
 // Revised: 10/26/2026 Saylor Statler - Modified for Assignment 5
+// Revised by: Baylie Stith 11/09/2026 - Modified for Assignment 6 (single solutions.txt output,
+//             puzzle labels, divider grid format) with help from Claude and ChatGPT
+//             (Claude: single solutions.txt output and puzzle labels;
+//              ChatGPT: bitmask candidate checking, dead-end detection, board reset in load())
 //
 // Build: g++ -std=c++17 -O2 -o Assignment6.exe Assignment6.cpp
 // Run:   ./Assignment6.exe puzzle1.txt puzzle2.txt puzzle3.txt puzzle4.txt puzzle5.txt
@@ -51,37 +55,52 @@ public:
            False -> Puzzle failed to load
    Created by: Claude (Created the entire function)
    Edited by: Baylie Stith (Created comments, allowed 0 to pass as blank)
+   Edited by: ChatGPT (Assignment 6: reset the board at the start of load())
    -------------------------------------------------------------------------------------- */
    bool load() {
-
-       // opens the file and checks if it's valid
+       // Open the puzzle file for reading
        std::ifstream in(fileName_);
-       if (!in) return false; // if valid -> return true, otherwise return false
-      
-       int count = 0; // counts the number of cells filled so far
-       char ch;
+       // If the file is missing or can't be opened -> puzzle failed to load
+       if (!in) return false;
 
-       // Loops while less than 81 cells are filled and a character can still be read
-       while (count < N * N && in.get(ch)) { // doesn't read more than 81 characters
-           // if digit is 1-9 store it. Also records the row and column of the cell
-           // then records the character as an int
-           if (ch >= '1' && ch <= '9')      grid_[count / N][count % N] = ch - '0';
-           // Baylie Stith and ChatGPT to 'return false;'
-           // _ or 0 stored as empty cell also records row and column and stores int
-           else if (ch == '_' || ch == '0') grid_[count / N][count % N] = 0;
-           // spaces, tabs, or newlines skipped
-           else if (isWhitespace(ch))      continue; // Jumps back to top of the loop
-           else                             return false; // invalid character found -> returns false
-           ++count; // moves to next cell
+       // MODIFIED (Assignment 6, ChatGPT): Reset the board in case this object is loaded more than once.
+       // Sets every cell in every row to 0 (blank) so old values can't carry over
+       for (auto& row : grid_) row.fill(0);
+
+       int count = 0; // counts how many cells have been read so far (0-81)
+       char ch;       // holds the character currently being read
+
+       // Read one character at a time until 81 cells are filled or the file ends
+       while (count < N * N && in.get(ch)) {
+           // Digit 1-9: convert the character to an int and store it in the grid.
+           // count / N gives the row and count % N gives the column.
+           if (ch >= '1' && ch <= '9')
+               grid_[count / N][count % N] = ch - '0';
+           // '_' or '0' means a blank cell, stored as 0
+           else if (ch == '_' || ch == '0')
+               grid_[count / N][count % N] = 0;
+           // Spaces, tabs, and newlines are not cells, so skip them without
+           // increasing count (continue jumps back to the top of the loop)
+           else if (isWhitespace(ch))
+               continue;
+           // Any other character is invalid -> the puzzle failed to load
+           else
+               return false;
+           // A cell was stored, so move on to the next one
+           ++count;
        }
-       // if file ends before 81 cells returns false -> file too short
+
+       // If the file ended before 81 cells were read, it is too short -> return false
        if (count != N * N) return false;
 
-       // Anything left after the 81 cells is whitespace.
+       // After 81 cells, only whitespace is allowed.
+       // Keep reading to make sure the file has no extra characters at the end.
        while (in.get(ch)) {
-           if (!isWhitespace(ch)) return false; // if cells are after whitespace -> return false
+           // A non-whitespace character here means the file has too many cells -> return false
+           if (!isWhitespace(ch)) return false;
        }
-       return true; // return true if everything else is correct
+       // Exactly 81 valid cells and nothing else -> the puzzle loaded successfully
+       return true;
    }
 
    /* -------------------------------------------------------------------------------------------
@@ -91,27 +110,49 @@ public:
            False if the grid is invalid
    Created by: Baylie Stith (Created the function)
    Edited by: ChatGPT (Fixed logic errors)
+   Edited by: ChatGPT (Assignment 6: rewrote to build row/column/box bitmasks from the clues)
    ------------------------------------------------------------------------------------------- */
    bool isInitialGridValid() {
-       // Nested loops to check the cell row by row
+       // MODIFIED (Assignment 6, ChatGPT): Build lookup masks from the starting clues and detect conflicts.
+       // Clear the masks so no digits are marked as used before we start checking.
+       // Each mask holds one 9-bit number per row, column, and 3x3 box.
+       // Bit 0 stands for digit 1, bit 1 for digit 2, ... bit 8 for digit 9.
+       rowUsed_.fill(0);
+       colUsed_.fill(0);
+       boxUsed_.fill(0);
+
+       // Visit every cell in the grid, row by row
        for (int row = 0; row < N; ++row) {
            for (int col = 0; col < N; ++col) {
-               int value = grid_[row][col]; // save cells value
-               if (value == 0) continue; // empty cell -> skip to next cell
+               // Save the digit in this cell (0 means the cell is blank)
+               int value = grid_[row][col];
+               // Blank cell -> nothing to check, move on to the next cell
+               if (value == 0) continue;
 
-               // Temporarily remove the value so isCandidate()
-               // can check whether it conflicts with other cells.
-               grid_[row][col] = 0;
-               // looks for value in the same row and column block
-               // if it find a conflict it trys another value until it finds every possible
-               // value that could go in that spot
-               bool valid = isCandidate(row, col, value);
-               grid_[row][col] = value; // stores value
+               // Make a number with only this digit's bit turned on.
+               // Example: value 3 -> 1u << 2 -> binary 000000100
+               unsigned short bit = static_cast<unsigned short>(1u << (value - 1));
+               // Find which 3x3 box (0-8) this cell belongs to
+               int box = boxIndex(row, col);
 
-               if (!valid) return false; // if a clue conflicts with another puzzle is unsolvable -> returns false
+               // If this digit's bit is already on in the row, column, or box mask,
+               // the same digit was already seen there, so two clues conflict.
+               // The puzzle is unsolvable -> return false.
+               if ((rowUsed_[row] & bit) || (colUsed_[col] & bit) ||
+                   (boxUsed_[box] & bit)) {
+                   return false;
+               }
+
+               // No conflict: turn on this digit's bit in the row, column, and box
+               // masks so later clues are checked against it
+               rowUsed_[row] |= bit;
+               colUsed_[col] |= bit;
+               boxUsed_[box] |= bit;
            }
        }
-       return true; // returns true if every clue passes
+       // Every clue passed the check -> the starting grid is valid.
+       // The masks now hold all the clues, so search() can start from them.
+       return true;
    }
 
    // prints grid to output stream and passes it to private printgrid without making changes
@@ -141,8 +182,19 @@ private:
    Grid grid_{}; // holds grid size
    int solutionCount_ = 0; // starts solutions at 0
    std::ostream* out_ = nullptr;
+
+   // MODIFIED (Assignment 6, ChatGPT): Each bit represents whether a digit is already used
+   // in a row, column, or box.
+   std::array<unsigned short, N> rowUsed_{};
+   std::array<unsigned short, N> colUsed_{};
+   std::array<unsigned short, N> boxUsed_{};
+
+   // MODIFIED (Assignment 6, ChatGPT): Added helper that maps a cell to its 3x3 box number
+   static int boxIndex(int row, int col) {
+       return (row / B) * B + (col / B);
+   }
   
-   // indicares if areas is considered white space or not
+   // Indicates whether a character is whitespace.
    static bool isWhitespace(char ch) {
        return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t';
    }
@@ -156,21 +208,16 @@ private:
            false otherwise
    Created by: Claude (Created the entire function)
    Edited by: Baylie Stith (Created comments)
+   Edited by: ChatGPT (Assignment 6: replaced the row/column/block scans with bitmask lookups)
    -------------------------------------------------------------------------------- */
 
    bool isCandidate(int row, int col, int v) const {
-       // Checks each row and column if the value v appears
-       for (int i = 0; i < N; ++i) {
-           if (grid_[row][i] == v) return false;  // row
-           if (grid_[i][col] == v) return false;  // column
-       }
-       // finds top-left corner of cell
-       int br = (row / B) * B, bc = (col / B) * B;
-       // scans the block for v. If v present -> returns true
-       for (int r = br; r < br + B; ++r)
-           for (int c = bc; c < bc + B; ++c)
-               if (grid_[r][c] == v) return false;  // block
-       return true;
+       // MODIFIED (Assignment 6, ChatGPT): Bitmask lookup instead of scanning the grid
+       unsigned short bit = static_cast<unsigned short>(1u << (v - 1));
+       int box = boxIndex(row, col);
+       return !(rowUsed_[row] & bit) &&
+              !(colUsed_[col] & bit) &&
+              !(boxUsed_[box] & bit);
    }
 
    /* ------------------------------------------------------------------------------
@@ -181,35 +228,44 @@ private:
            False -> if grid full
    Created by: Baylie Stith (Created the function)
    Edited by: ChatGPT (Fixed logic errors)
+   Edited by: ChatGPT (Assignment 6: added deadEnd flag and early return on a one-candidate cell)
    ------------------------------------------------------------------------------ */
 
-   bool findEmpty(int& bestRow, int& bestCol) const {
-       int minCandidates = N + 1; // starts with a number larger than the maximum possible candidates (9)
-       bool found = false; // returns false if no empty cells found
+   // MODIFIED (Assignment 6, ChatGPT): Added deadEnd parameter
+   bool findEmpty(int& bestRow, int& bestCol, bool& deadEnd) const {
+       int minCandidates = N + 1;
+       bool found = false;
+       deadEnd = false;
 
-       // visits every cell skipping full ones
+       // Find the empty cell with the fewest legal values (MRV).
        for (int row = 0; row < N; ++row) {
            for (int col = 0; col < N; ++col) {
                if (grid_[row][col] != 0) continue;
-              
-               // counts how many digits caan go in the cell
+
                int count = 0;
                for (int v = 1; v <= N; ++v)
                    if (isCandidate(row, col, v)) ++count;
 
-               // if the cell has less options than other previous cells remember it as the best choice
+               // MODIFIED (Assignment 6, ChatGPT): No candidates means this branch cannot
+               // produce a solution.
+               if (count == 0) {
+                   deadEnd = true;
+                   return true;
+               }
+
                if (count < minCandidates) {
                    minCandidates = count;
                    bestRow = row;
                    bestCol = col;
                    found = true;
-               }
 
-               // No legal values means this branch is a dead end; stop looking.
-               if (count == 0) return true;
+                   // MODIFIED (Assignment 6, ChatGPT): A cell with one candidate is the best
+                   // possible choice.
+                   if (count == 1) return true;
+               }
            }
        }
-       return found; // return if empty cell found and then choose the cell with least optons
+       return found; // false means there are no empty cells
    }
 
    /* ---------------------------------------------------------------------------------
@@ -218,26 +274,49 @@ private:
    Output: Solution(s) and how many were found
    Created by: Baylie Stith (Created the function)
    Edited by: ChatGPT (Fixed logic errors)
+   Edited by: ChatGPT (Assignment 6: updates and undoes the bitmasks, handles deadEnd)
+   Edited by: Baylie Stith (Assignment 6: added comments)
    --------------------------------------------------------------------------------- */
 
    void search() {
+    // Records empty cell with fewest candidates and reports if there's no legal digits
        int row = 0, col = 0;
-       if (!findEmpty(row, col)) {  // no empty cells: a complete solution
+       bool deadEnd = false; // MODIFIED (Assignment 6, ChatGPT)
+
+    // Returns false if no empty cells left, meaning solutions found. Counts it, prints it,
+    // then looks for more solutions.
+       if (!findEmpty(row, col, deadEnd)) {
            ++solutionCount_;
-           // MODIFIED (Assignment 5): Removed "Solution k:" header printing 
-           // to adhere strictly to the requirement that each solution is printed 
-           // in the pure grid format followed by "Solutions found: n".
            printGrid(*out_, grid_);
            return;
        }
-       // trys each value 1-9 in the chosen cell. I digit wokrs, place it, call search()
-       // on the rest of the grid and set the cell back to 0 so next digit starts from
-       // a clean slate
+       // Empty cell has no candidates so branch can't be completed. Returns and trys a
+       // different digit.
+       if (deadEnd) return; // MODIFIED (Assignment 6, ChatGPT)
+
+       // MODIFIED (Assignment 6, ChatGPT): Try each candidate, update its masks, recurse,
+       // then undo the move.
+       // loops through each digit 1-9 to see if it can be placed in the empty cell
        for (int v = 1; v <= N; ++v) {
            if (isCandidate(row, col, v)) {
+            // assignes bits for each digit to record what digits are used in each row, column, and box
+               unsigned short bit = static_cast<unsigned short>(1u << (v - 1));
+               int box = boxIndex(row, col);
+            
+            // Places a digit then marks it as used in the row, column, and box.
                grid_[row][col] = v;
+               rowUsed_[row] |= bit;
+               colUsed_[col] |= bit;
+               boxUsed_[box] |= bit;
+
+            // Solve the rest of the grid and returns after exploring every possibility.
                search();
-               grid_[row][col] = 0;  // backtrack
+
+            // Undoes the move and marks the digit as unused in the row, column, and box.
+               grid_[row][col] = 0;
+               rowUsed_[row] &= static_cast<unsigned short>(~bit);
+               colUsed_[col] &= static_cast<unsigned short>(~bit);
+               boxUsed_[box] &= static_cast<unsigned short>(~bit);
            }
        }
    }
@@ -248,24 +327,38 @@ private:
    Output: Formatted grid representation
    Created by: Claude (Created the function)
    Edited by: Baylie Stith (Created comments)
+   Edited by: Baylie Stith (Assignment 6: kept the divider-line grid format)
    --------------------------------------------------------------------------------- */
 
    static void printGrid(std::ostream& out, const Grid& g) { // takes output stream and grid
-       // before 3 and 6 rows print a divider (horizontal)
+       // Loop through each row of the grid, top to bottom
        for (int r = 0; r < N; ++r) {
+           // Before the 4th and 7th rows (r = 3 and r = 6), print a horizontal divider
+           // line to separate the 3x3 blocks. r > 0 skips the very first row.
            if (r > 0 && r % B == 0) out << "------+-------+------\n";
-           // print divider between columns 3 and 6 (vertical)
+
+           // Loop through each column in the current row, left to right
            for (int c = 0; c < N; ++c) {
+               // Before the 4th and 7th columns (c = 3 and c = 6), print a vertical
+               // divider to separate the 3x3 blocks. c > 0 skips the first column.
                if (c > 0 && c % B == 0) out << "| ";
-               // prints '_' for empty cell overwise turns int into char and prints a new line
+
+               // Print '_' if the cell is empty (0). Otherwise convert the digit (1-9)
+               // to its character by adding it to '0' (e.g. 5 -> '5') and print that.
                out << (g[r][c] == 0 ? '_' : char('0' + g[r][c]));
+
+               // Print a space after every cell except the last one in the row,
+               // so there is no trailing space at the end of the line
                out << (c < N - 1 ? " " : "");
            }
+           // End the current row with a newline
            out << '\n';
        }
+       // Print a blank line after the whole grid to separate it from whatever comes next
+       // (another solution or the "Solutions found: n" line)
        out << '\n';
    }
-};
+}; // MODIFIED (Assignment 6, Baylie Stith): restored closing brace of class SudokuPuzzle
 
 /* --------------------------------------------------------------------------
 int main() -> Main function to run the Sudoku puzzle solver. It processes
@@ -276,6 +369,8 @@ Output: Solved puzzle(s) and the number of solutions
 Created by: Claude (Created the entire function)
 Edited by: Baylie Stith (Created comments, improved error checking)
 Edited by: ChatGPT (Fixed logic errors)
+Edited by: Claude (Assignment 6: single solutions.txt output and "Puzzle: x" labels)
+Edited by: Baylie Stith (Assignment 6: split the load/validity checks into separate ifs)
 -------------------------------------------------------------------------- */
 
 int main(int argc, char* argv[]) { // argc -> num of command line arguments.argv -> hold them as text
@@ -289,29 +384,28 @@ int main(int argc, char* argv[]) { // argc -> num of command line arguments.argv
            files.push_back("puzzle" + std::to_string(i) + ".txt");
    }
 
-   // MODIFIED (Assignment 5): Loop through each input puzzle file, create the corresponding
-   // output file (solution1.txt through solution5.txt), handle invalid states with
-   // "No solution found.", and write solution grids followed by "Solutions found: n".
+   // MODIFIED (Assignment 6, Claude): Single output file for all puzzles
+   std::ofstream outFile("solutions.txt");
+   if (!outFile) {
+       std::cerr << "Could not open solutions.txt for writing.\n";
+       return 1;
+   }
+
    for (size_t i = 0; i < files.size(); ++i) {
        const auto& name = files[i];
 
-       // Derive output filename corresponding to input file (e.g. puzzle1.txt -> solution1.txt)
-       std::string outName;
-       if (name.rfind("puzzle", 0) == 0) {
-           outName = "solution" + name.substr(6);
-       } else {
-           outName = "solution_" + name + ".txt";
-       }
-
-       std::ofstream outFile(outName);
-       if (!outFile) {
-           continue; // Skip if output file cannot be opened
-       }
+       // MODIFIED (Assignment 6, Claude): Blank line between puzzles, then the puzzle label
+       if (i > 0) outFile << "\n";
+       outFile << "Puzzle: " << name << "\n";
 
        SudokuPuzzle puzzle(name);
 
-       // If loading fails or initial clues conflict, write exactly "No solution found."
-       if (!puzzle.load() || !puzzle.isInitialGridValid()) {
+       // MODIFIED (Assignment 6, Baylie Stith): Load and validity checks are separate ifs
+       if (!puzzle.load()) {
+           outFile << "No solution found.\n";
+           continue;
+       }
+       if (!puzzle.isInitialGridValid()) {
            outFile << "No solution found.\n";
            continue;
        }
